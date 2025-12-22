@@ -1,16 +1,14 @@
 # usb_uart_bridge.py
 # Minimal USB <-> UART bridge for RP2040 (MicroPython)
 # Usage: import usb_uart_bridge; usb_uart_bridge.main(baud=38400, uart_id=0)
-
+#The TTL pin (from computer) default at UART1 (pin 8,9)
+#The RS232 pin (to screen) default at UART0 (pin 0,1 and enable invert logic)
 import sys, time
 from machine import UART
 
 def main(baud=38400, uart_id=0):
     rs232 = UART(0, baudrate=38400,tx=0,rx=1,invert=0|1)
     ttl=UART(1,baudrate=115200,tx=8,rx=9)
-    #stdin_buf = getattr(ttl.read(1), "buffer", None)
-    #stdout_buf = getattr(sys.stdout, "buffer", None)
-
     while True:
         # ttl -> rs232
         try:
@@ -42,4 +40,5 @@ def main(baud=38400, uart_id=0):
 
 # allow running as script
 if __name__ == "__main__":
+
     main()
