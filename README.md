@@ -9,6 +9,6 @@ Plan to rewrite to C# later due to SMTC
 3. python interpreter
 
 ## What music software support?
-Maybe all music software that suppoerts SMTC procotool?  
+Maybe all music software that supports SMTC procotool?  
 Foobar2000 or Windows Groove music is the best(both support artist broadcast over SMTC)  
 (some programs doesnt broadcast song name in smtc, others may dont send time info in smtc, in that case it only send lyric based internal time and the jump doesnt work.
