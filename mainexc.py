@@ -1,16 +1,19 @@
 # media_sync.py
 # Python 3.7+ (tested)
-# Dependencies: requests, pyserial, pywin32
-# pip install requests pyserial pywin32
+# Dependencies: requests, pyserial, pywin32, zhconv
+# pip install requests pyserial pywin32 zhconv
 
 #from opencc import OpenCC
 #import traceback
+import os
 import re
 import time
 import threading
 import requests
 import serial
+import serial.tools.list_ports
 import sys
+import zhconv
 from difflib import SequenceMatcher
 
 # If on Windows and using named pipe client:
@@ -23,37 +26,23 @@ except Exception:
 # -----------------------
 # Configuration
 # -----------------------
-PIPE_MODE = True            # True: read from named pipe; False: read from stdin
-PIPE_NAME = r'\\.\pipe\MusicInfoPipe'  # full pipe path for pywin32 CreateFile
-SERIAL_PORT = 'COM27'        # 修改为你的串口
-SERIAL_BAUD = 115200
+PIPE_MODE = True  # True: read from named pipe; False: read from stdin
+PIPE_NAME = r'\\.\pipe\MusicInfoPipe'
+SERIAL_BAUD = 38400
+# 自动轮询播放位置并发送歌词的间隔（秒）
+POSITION_WATCH_INTERVAL = 0.2  # 可调为 0.2 ~ 1.0，根据需要
+POSITION_CHANGE_THRESHOLD = 0.05  # 最小位置变化阈值
 
-# 自动轮询播放位置并发送歌词的间隔（秒） #fix13 part1
-POSITION_WATCH_INTERVAL = 0.5  # 可调为 0.2 ~ 1.0，根据需要
-
-# 控制 watcher 线程的停止标志          #fix13 part2
-_position_watcher_stop = False
-_position_watcher_lock = threading.Lock()
+# 全局统一歌词偏移量（秒）：正数提前，负数延后
+LYRIC_OFFSET = 0.40
 
 NETEASE_SEARCH_LIMIT = 5
-DURATION_TOLERANCE_SEC = 8.0   # 时长匹配容差（秒）
+DURATION_TOLERANCE_SEC = 8.0
 HTTP_TIMEOUT = 6.0
-
 # 控制发送行为
 SEND_ON_MATCH = True
 MIN_SEND_INTERVAL = 0.05   # 向串口发送最小间隔，防止刷屏（秒）
-
-# 播放时间锚点（线程安全访问请用 anchor_lock）  #fix 15 part 1
-anchor_lock = threading.Lock()
-# 当 anchor_ts 不为 None 时，表示从 anchor_ts 开始播放，anchor_pos 为该时刻的歌曲位置（秒）
-playback_anchor_ts = None    # wall-clock 时间戳（秒）
-playback_anchor_pos = 0.0    # 对应的歌曲位置（秒）
-# 暂停标志（可选）
-is_paused_by_anchor = False
-
-# 配置：轮询间隔与最小位置变化阈值（秒） #fix15 part 3 layer 1
-POSITION_WATCH_INTERVAL = 0.20 
-POSITION_CHANGE_THRESHOLD = 0.05
+_position_watcher_stop = False
 
 _re_hiragana = re.compile(r'[\u3040-\u309F]')
 _re_katakana = re.compile(r'[\u30A0-\u30FF]')
@@ -64,7 +53,7 @@ _re_latin = re.compile(r'[A-Za-z]')
 # -----------------------
 # 全局状态（线程安全）
 # -----------------------
-_state_lock = threading.Lock()
+app_lock = threading.RLock()
 state = {
     "source": None,
     "title": None,
@@ -78,7 +67,7 @@ state = {
 }
 
 # 歌词缓存与当前歌曲信息
-lyrics_lock = threading.Lock()
+lyrics_lock = app_lock
 current_song = {
     "song_id": None,
     "lyrics": [],   # list of (time_seconds, text)
@@ -86,7 +75,7 @@ current_song = {
 }
 
 # 串口发送控制
-serial_lock = threading.Lock()
+serial_lock = app_lock
 ser = None
 last_sent_ts = 0.0
 last_sent_lyric_time = None
@@ -98,7 +87,7 @@ last_sent_lyric_time = None
 #safe update #fix9 part1    #fix10 part1 #fix11 part1
 def safe_update_state(**kwargs):
     #仅在传入值不为 None 且非空字符串时更新 state,避免意外覆盖已有字段为 None
-    with _state_lock:
+    with app_lock:
         for k, v in kwargs.items():
             if k in state:
                 if v is None:
@@ -110,12 +99,11 @@ def safe_update_state(**kwargs):
 
 #歌词自动输出       #fix14 part3    #fix15 part4
 def position_watcher(interval=POSITION_WATCH_INTERVAL):
-    global _position_watcher_stop
     last_pos = None
     print("position_watcher started, interval=", interval)
     try:
         while True:
-            with _position_watcher_lock:
+            with app_lock:
                 if _position_watcher_stop:
                     break
             st = get_state_copy()
@@ -139,7 +127,7 @@ def position_watcher(interval=POSITION_WATCH_INTERVAL):
         print("position_watcher fatal error:", e)
 
 def get_state_copy():
-    with _state_lock:
+    with app_lock:
         return dict(state)
 
 def similar(a, b):
@@ -148,7 +136,7 @@ def similar(a, b):
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 def parse_time_to_seconds(tstr):
-    # 支持 hh:mm:ss(.ms) 或 mm:ss(.ms)
+    # 支持 hh:mm:ss(.m	s) 或 mm:ss(.ms)
     if not tstr:
         return None
     try:
@@ -233,52 +221,22 @@ def set_playback_anchor(pos_seconds, at_ts=None):
     global playback_anchor_ts, playback_anchor_pos, is_paused_by_anchor
     if at_ts is None:
         at_ts = time.time()
-    with anchor_lock:
+    with app_lock:
         playback_anchor_ts = float(at_ts)
         playback_anchor_pos = float(pos_seconds or 0.0)
         is_paused_by_anchor = False
     # debug
     print("[ANCHOR] set anchor pos=%.3f at_ts=%.3f" % (playback_anchor_pos, playback_anchor_ts))
 
-def clear_playback_anchor():
-    #将锚点清空（例如进入暂停时）
-    global playback_anchor_ts, playback_anchor_pos, is_paused_by_anchor
-    with anchor_lock:
-        # 保留当前位置到 anchor_pos，清空 anchor_ts 表示暂停状态
-        if playback_anchor_ts is not None:
-            # 计算当前位置并保存为 anchor_pos
-            now = time.time()
-            playback_anchor_pos = playback_anchor_pos + max(0.0, now - playback_anchor_ts)
-        playback_anchor_ts = None
-        is_paused_by_anchor = True
-    print("[ANCHOR] cleared anchor, paused at pos=%.3f" % (playback_anchor_pos))
-
 def compute_current_position_from_anchor():
     #返回基于锚点计算的当前歌曲位置（秒）。
     #逻辑：
     #  - 如果 anchor_ts 不为 None：返回 anchor_pos + (now - anchor_ts)
     #  - 否则返回 anchor_pos（表示暂停时保存的位置）
-    with anchor_lock:
-        if playback_anchor_ts is None:
-            return float(playback_anchor_pos or 0.0)
-        else:
-            return float(playback_anchor_pos + max(0.0, time.time() - playback_anchor_ts))
-
-# 选择最接近的歌词行索引（返回索引或 None）
-def find_lyric_index_for_time(lyrics, target_sec):
-    if not lyrics:
-        return None
-    # 找到最后一个 time <= target_sec
-    idx = None
-    for i, (t, txt) in enumerate(lyrics):
-        if t <= target_sec + 0.0001:
-            idx = i
-        else:
-            break
-    if idx is None:
-        # 如果 target 在第一行之前，返回 0
-        return 0
-    return idx
+    if playback_anchor_ts is None:
+        return float(playback_anchor_pos or 0.0)
+    else:
+        return float(playback_anchor_pos + max(0.0, time.time() - playback_anchor_ts))
 
 # -----------------------
 # NetEase API 调用
@@ -378,25 +336,25 @@ def open_serial(port, baud):
         ser = None
 
 #send to serial lyric line 1 and 2
-# 依赖：全局变量 ser, serial_lock, MIN_SEND_INTERVAL, last_sent_ts 已在脚本中定义
+# 依赖：全局变量 ser, app_lock, MIN_SEND_INTERVAL, last_sent_ts 已在脚本中定义
 # 这两个函数分别用于发送第一行和第二行文本，线程安全并带节流与可选强制发送参数。
 def send_to_serial_line1(text: str, force: bool = False) -> None:
     #逐行发送第一条文本（LRC1 前缀由调用方添加或在上层处理）。
     #参数:text  - 要发送的纯文本（不包含额外换行，函数会自动添加换行）  force - True 时忽略最小发送间隔立即发送
     global last_sent_ts, ser
-    if not SEND_ON_MATCH:
-        return
-    if ser is None:
-        # 串口未打开，直接返回（或可在此处记录日志）
+    if not SEND_ON_MATCH or ser is None:
         return
     now = time.time()
     if not force and (now - last_sent_ts) < MIN_SEND_INTERVAL:
         return
     try:
-        with serial_lock:
+        with app_lock:
+            # 1. 先用干净的 text 检测语言编码
+            encoding = simple_detect_line_language(text, 1)
+            # 2. 再拼接换行符打包发送
             payload = text + '\n\r'
             ser.write(b'\x0C')
-            ser.write(payload.encode(simple_detect_line_language(payload,1), errors='ignore'))
+            ser.write(payload.encode(encoding, errors='ignore'))
             ser.flush()
         last_sent_ts = now
     except Exception as e:
@@ -414,7 +372,7 @@ def send_to_serial_line2(text: str, force: bool = False) -> None:
     if not force and (now - last_sent_ts) < MIN_SEND_INTERVAL:
         return
     try:
-        with serial_lock:
+        with app_lock:
             #payload = text
             ser.write(text.encode(simple_detect_line_language(text,2), errors='ignore'))
             ser.flush()
@@ -480,11 +438,11 @@ def parse_pipe_line(line):
         st = get_state_copy()
         title_now = st.get('title')
         if title_now:
-            with lyrics_lock:
+            with app_lock:
                 cached_title = current_song.get('title_cached')
                 has_lyrics = bool(current_song.get('lyrics'))
             if cached_title != title_now or not has_lyrics:
-                with lyrics_lock:
+                with app_lock:
                     current_song['title_cached'] = title_now
                     current_song['fetch_start'] = time.time()
                     current_song['fetch_duration'] = None
@@ -541,7 +499,7 @@ def on_new_song_detected():
     if not title:
         return
     # 记录搜索开始时间（线程安全）
-    with lyrics_lock:
+    with app_lock:
         current_song['fetch_start'] = time.time()
         current_song['fetch_duration'] = None
         current_song['song_id'] = None
@@ -621,25 +579,20 @@ def search_and_fetch_lyrics(title, artist, album, duration):
             print("No lrc text in response for id:", sid)
             return
 
-        # 使用合并函数，得到 grouped 结构
+# 使用合并函数，得到 grouped 结构
         grouped = build_grouped_lyrics(lrc_text, tlyric_text)
 
-        # 记录 fetch_end 与 fetch_duration（从 fetch_start 到现在的总耗时）
         fetch_end = time.time()
-        with lyrics_lock:
-            fetch_start = current_song.get('fetch_start') or search_start
-            fetch_duration = fetch_end - fetch_start
+        with app_lock:
             current_song['song_id'] = sid
-            # 存储 grouped 结构（每项为 (time_seconds, [texts])）
             current_song['lyrics'] = grouped
             current_song['fetched_at'] = fetch_end
-            current_song['fetch_duration'] = fetch_duration
 
         print("Fetched grouped lyrics entries:", len(grouped))
         for i, (t, texts) in enumerate(grouped[:8]):
             print("  [%02d] time=%.3f lines=%d -> %s" % (i, t, len(texts), texts))
-    except Exception as e: 
-        print("search_and_fetch_lyrics error:", e) 
+    except Exception as e:
+        print("search_and_fetch_lyrics error:", e)
 
 # 计算目标时间并发送最接近的歌词行          #fix 1 part 3 #fix4 part1
 # 假设 send_to_serial_line1 和 send_to_serial_line2 已存在（如前所示）
@@ -651,18 +604,16 @@ def compute_and_send_current_lyric():
         return
     if st.get('playback') and st.get('playback').lower() == 'paused':
         return
-    pos = st.get('position')
+
+    # 直接基于锚点计算当前最精确的播放位置
+    pos = compute_current_position_from_anchor()
     if pos is None:
         return
-
-    with lyrics_lock:
+    with app_lock:
         grouped = list(current_song.get('lyrics') or [])
-        fetched_at = current_song.get('fetched_at')
 
-    #if fetch_duration is not None:
-        lyric_offset = 0.15
-
-    target_time = pos
+    # 统一使用全局偏移量
+    target_time = pos + LYRIC_OFFSET
 
     # 找到最后一个 time <= target_time
     idx = None
@@ -679,7 +630,10 @@ def compute_and_send_current_lyric():
         return
 
     # 去重发送判断（按时间）
-    if last_sent_lyric_time is not None and abs(last_sent_lyric_time - base_time) < 1e-6:
+    if (
+        last_sent_lyric_time is not None
+        and abs(last_sent_lyric_time - base_time) < 1e-6
+    ):
         return
 
     # entries 是 [(source, text), ...]，按顺序取前两条文本
@@ -690,14 +644,16 @@ def compute_and_send_current_lyric():
         text1 = entries[0][1]
         text2 = entries[1][1]
 
-    #line1 = text1  #line1 = "LRC1:=" + text1    #line2 = text2    #line2 = "LRC2:=" + text2
     # 逐行发送，使用 force=True 确保连续发送
     send_to_serial_line1(text1, force=True)
     send_to_serial_line2(text2, force=True)
 
     last_sent_lyric_time = base_time
-    print("Sent grouped lyric time=%.3f entries=%d pos=%.3f lyric_offset=%.3f" %
-          (base_time, len(entries), pos, lyric_offset))
+    print(
+        'Sent grouped lyric time=%.3f entries=%d pos=%.3f lyric_offset=%.3f'
+        % (base_time, len(entries), pos, LYRIC_OFFSET)
+    )
+    print()
 
 # -----------------------
 # 管道读取线程（Windows named pipe via pywin32）
@@ -758,9 +714,24 @@ def stdin_reader_loop():
 # -----------------------
 def main():     #fix14 part4
     global ser, _position_watcher_stop
+    
     # open serial
+    if len(list(serial.tools.list_ports.comports())) == 0:
+      print('未检测到COM端口')
+      os.system("pause")
+      sys.exit(0)
+    else:
+      for port in serial.tools.list_ports.comports():
+        print(f"名称: {port.name}")
+        print(f"描述: {port.description}")
+        print(f"制造商: {port.manufacturer}")
+        print(f"硬件ID: {port.hwid}")
+        print("-" * 30)
+        print("请输入要连接的COM端口")
+      SERIAL_PORT = input("请输入：");
     try:
         open_serial(SERIAL_PORT, SERIAL_BAUD)
+
     #initalize screen
         ser.write(b'\x0C\x1f\x03')
         ser.write(b'\x1F\x58\x03')      #set brightness 03-75%
@@ -787,7 +758,7 @@ def main():     #fix14 part4
     except KeyboardInterrupt:
         print("exiting...")
         # stop watcher
-        with _position_watcher_lock:
+        with app_lock:
             _position_watcher_stop = True
         # give watcher a moment to exit
         watcher_thread.join(timeout=1.0)
@@ -797,15 +768,19 @@ def main():     #fix14 part4
         except:
             pass
 
-# 简单的繁体字样本集，用于快速判断（可按需扩充）
-_TRADITIONAL_SAMPLE = set(list("體愛萬與麼裏後麼廣電學氣風顏龍麵麥"))
-
-#text language test return gb2312 big5 shihftjis ksc5601 or ascii
-def simple_detect_line_language(text,Line):
+# text language test return gb2312 big5 shift_jis ksc5601 or ascii  2026-08-15
+def simple_detect_line_language(text, Line):
     if not text or not text.strip():
         return 'ascii'
 
-    counts = {'hiragana':0,'katakana':0,'hangul':0,'cjk':0,'latin':0,'other':0}
+    counts = {
+        'hiragana': 0,
+        'katakana': 0,
+        'hangul': 0,
+        'cjk': 0,
+        'latin': 0,
+        'other': 0,
+    }
     for ch in text:
         if _re_hiragana.search(ch):
             counts['hiragana'] += 1
@@ -825,43 +800,41 @@ def simple_detect_line_language(text,Line):
         ser.write(b'\x1F\x28\x67\x02\x00')
         return 'ascii'
 
-    # 优先判断日文
-    if counts['hiragana'] + counts['katakana'] > 0: # and (counts['hiragana'] + counts['katakana']) >= max(counts['cjk'], counts['hangul']):
+    print(text)
+    print(counts)
+
+    # 1. 优先判断日文（假名）
+    if counts['hiragana'] + counts['katakana'] > 0:
         ser.write(b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x00')
         print("L is JP")
         return 'shift_jis'
-    # 韩文
+
+    # 2. 韩文
     if counts['hangul'] > 0 and counts['hangul'] >= counts['cjk']:
         ser.write(b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x01')
         print("L is KR")
         return 'KSC5601'
-    # 中文（汉字占主导）
+
+    # 3. 中文（汉字占主导）
     if counts['cjk'] > 0 and counts['cjk'] >= max(counts['hangul'], counts['hiragana'] + counts['katakana']):
-        # 简单繁体判定：若句中出现样本繁体字则判为繁体，否则判为简体
-        for ch in text:
-            if ch in _TRADITIONAL_SAMPLE:
-                ser.write(b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x03')
-                print("Lis zhT")
-                return 'Big5'
-        # 若句子很短且混合其他脚本，返回 mixed
-            if total <= 6 and (counts['latin'] > 0 or counts['other'] > 0):
-                if Line==1:
-                    ser.write(b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x00')
-                    print("L1 is JP")
-                    return 'Shift_JIS'
+        # 转换为简体后与原文对比：不一致说明包含繁体字
+        if zhconv.convert(text, 'zh-cn') != text:
+            ser.write(b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x03')
+            print("L is zhT (Big5)")
+            return 'Big5'
+        else:
             ser.write(b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x02')
-            print("L is UnK may zhS")
+            print("L is zhS (GB2312)")
             return 'GB2312'
-        ser.write(b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x02')
-        print("here?")
-        return 'GB2312'
-    # 英文为主
+
+    # 4. 英文/拉丁字母为主
     if counts['latin'] > 0 and counts['latin'] >= max(counts['cjk'], counts['hangul'], counts['hiragana'] + counts['katakana']):
         ser.write(b'\x1F\x28\x67\x02\x00')
-        print("L"+str(Line)+" is EN")
+        print("L is EN")
         return 'ascii'
-    # 混合或无法判定
-    print("L is UnK2")
+
+    # 5. 混合或无法判定（默认 ASCII）
+    print("L is UnK def ASCII")
     ser.write(b'\x1F\x28\x67\x02\x00')
     return 'ascii'
 
