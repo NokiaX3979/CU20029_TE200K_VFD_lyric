@@ -5,7 +5,7 @@
 
 import os
 import re
-import ti	me
+import time
 import threading
 import requests
 import serial
@@ -30,7 +30,7 @@ SERIAL_BAUD = 38400
 # 自动轮询播放位置并发送歌词的间隔（秒）
 POSITION_WATCH_INTERVAL = 0.15       # 可调为 0.2 ~ 1.0，根据需要
 POSITION_CHANGE_THRESHOLD = 0.05    # 最小位置变化阈值
-LYRIC_OFFSET = 0.20                 # 全局统一歌词偏移量（秒）：正数提前，负数延后
+LYRIC_OFFSET = 0.0                 # 全局统一歌词偏移量（秒）：正数提前，负数延后
 
 NETEASE_SEARCH_LIMIT = 5
 DURATION_TOLERANCE_SEC = 8.0
@@ -41,8 +41,8 @@ SEND_ON_MATCH = True
 MIN_SEND_INTERVAL = 0.05   # 向串口发送最小间隔，防止刷屏（秒）
 
 # 全局变量定义与初始化
-#playback_anchor_ts = None
-#playback_anchor_pos = 0.0
+playback_anchor_ts = None
+playback_anchor_pos = 0.0
 _position_watcher_stop = False
 
 _re_hiragana = re.compile(r'[\u3040-\u309F]')
@@ -425,27 +425,11 @@ def on_new_song_detected():
     t = threading.Thread(target=search_and_fetch_lyrics, args=(title, artist, album, duration), daemon=True)
     t.start()
 
-# 当播放状态变化（暂停/播放）
-def on_playback_state_change(state_str):
-    print("Playback state:", state_str)
-    # if paused, we should stop sending; if playing, resume sending (handled in send logic)
-
-# 当 timeline 更新（position/duration）
-def on_timeline_update():
-    # reposition lyric send based on new position
-    st = get_state_copy()
-    if st.get('playback') and st.get('playback').lower() == 'paused':
-        return
-    # compute send target and send nearest lyric
-    t = threading.Thread(target=compute_and_send_current_lyric, daemon=True)
-    t.start()
-
-# 搜索并获取歌词（会更新 current_song）         #fix 1 part 2
+# 搜索并获取歌词（会更新 current_song）
 def search_and_fetch_lyrics(title, artist, album, duration):
     try:
         print("Searching for:", title, artist, album, duration)
         # 记录请求开始（也可在 choose_best_song_id 内记录更细粒度 RTT）
-        search_start = time.time()
         sid = choose_best_song_id(title, artist, album, duration)
         print("Searched SongId is "+str(sid))
         if not sid:
@@ -455,11 +439,8 @@ def search_and_fetch_lyrics(title, artist, album, duration):
         # 获取歌词并测量请求耗时
         #lyric_start = time.time()
         #data, http_rtt = netease_get_lyric(sid)  # netease_get_lyric 返回 (json, rtt)
-        res = netease_get_lyric(sid)                #fix 2 part 1
-        if isinstance(res, tuple) and len(res) == 2:
-            data
-        else:
-            data = res
+        res = netease_get_lyric(sid)
+        data = netease_get_lyric(sid)
         #lyric_end = time.time()
 
         if not data:
@@ -606,8 +587,6 @@ def pipe_reader_loop(pipe_name):
                 win32file.CloseHandle(handle)
             except:
                 pass
-        except Exception:        # no server yet or other error; wait and retry
-            time.sleep(0.5)
         except Exception as e:
             print("pipe_reader_loop error:", e)
             time.sleep(0.5)
@@ -636,7 +615,7 @@ def main():     #fix14 part4
 
     for port in com_ports:
         print(f'名称: {port.name}\n描述: {port.description}\n硬件ID:'f' {port.hwid}\n'+ '-' * 30)
-        SERIAL_PORT = input("请输入要连接的COM端口：");
+    SERIAL_PORT = input("请输入要连接的COM端口：");
     try:
         open_serial(SERIAL_PORT, SERIAL_BAUD)
 
@@ -671,12 +650,11 @@ def main():     #fix14 part4
         if ser:
             ser.close()
 
-
-# text language test return gb2312 big5 shift_jis ksc5601 or ascii  2026-08-15
+# text language test return gb2312 big5 shift_jis ksc5601 or ascii  2026-08-16
 def simple_detect_line_language(text):
     if not text or not text.strip():
         return 'ascii'
-    
+
     text = text.strip()
     counts = {
         'hiragana': 0,
@@ -685,60 +663,61 @@ def simple_detect_line_language(text):
         'cjk': 0,
         'latin': 0,
         'other': 0,
-    }
+  }
+
     for ch in text:
-        if _re_hiragana.search(ch):
-            counts['hiragana'] += 1
-        elif _re_katakana.search(ch):
-            counts['katakana'] += 1
-        elif _re_hangul.search(ch):
-            counts['hangul'] += 1
-        elif _re_cjk.search(ch):
-            counts['cjk'] += 1
-        elif _re_latin.search(ch):
-            counts['latin'] += 1
-        else:
-            counts['other'] += 1
+      code = ord(ch)
+      if 0x3040 <= code <= 0x309F:
+        counts['hiragana'] += 1
+      elif 0x30A0 <= code <= 0x30FF:
+        counts['katakana'] += 1
+      elif 0xAC00 <= code <= 0xD7AF:
+        counts['hangul'] += 1
+      elif ((0x4E00 <= code <= 0x9FFF)or (0x3400 <= code <= 0x4DBF)or (0xF900 <= code <= 0xFAFF)):
+        counts['cjk'] += 1
+      elif ('a' <= ch <= 'z') or ('A' <= ch <= 'Z'):
+        counts['latin'] += 1
+      else:
+        counts['other'] += 1
 
     if sum(counts.values()) == 0:
-        ser.write(b'\x1F\x28\x67\x02\x00')
-        return 'ascii'
+      ser.write(b'\x1F\x28\x67\x02\x00')
+      return 'ascii'
 
     print(text)
     print(counts)
 
-    # 1. 优先判断日文（假名）
+    # 1. 假名（日文）
     if counts['hiragana'] + counts['katakana'] > 0:
-        ser.write(b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x00')
-        print("L is JP")
-        return 'shift_jis'
+      ser.write(b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x00')
+      print('L is JP')
+      return 'shift_jis'
 
     # 2. 韩文
     if counts['hangul'] > 0 and counts['hangul'] >= counts['cjk']:
-        ser.write(b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x01')
-        print("L is KR")
-        return 'KSC5601'
+      ser.write(b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x01')
+      print('L is KR')
+      return 'KSC5601'
 
-    # 3. 中文（汉字占主导）
+    # 3. 中文（简体 / 繁体）
     if counts['cjk'] > 0 and counts['cjk'] >= max(counts['hangul'], counts['hiragana'] + counts['katakana']):
-        # 转换为简体后与原文对比：不一致说明包含繁体字
-        if zhconv.convert(text, 'zh-cn') != text:
-            ser.write(b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x03')
-            print("L is zhT (Big5)")
-            return 'Big5'
-        else:
-            ser.write(b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x02')
-            print("L is zhS (GB2312)")
-            return 'GB2312'
+      if zhconv.convert(text, 'zh-cn') != text:
+        ser.write(b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x03')
+        print('L is zhT (Big5)')
+        return 'Big5'
+      else:
+        ser.write(b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x02')
+        print('L is zhS (GB2312)')
+        return 'GB2312'
 
-    # 4. 英文/拉丁字母为主
+    # 4. 拉丁字母（英文）
     if counts['latin'] > 0 and counts['latin'] >= max(counts['cjk'], counts['hangul'], counts['hiragana'] + counts['katakana']):
-        ser.write(b'\x1F\x28\x67\x02\x00')
-        print("L is EN")
-        return 'ascii'
+      ser.write(b'\x1F\x28\x67\x02\x00')
+      print('L is EN')
+      return 'ascii'
 
-    # 5. 混合或无法判定（默认 ASCII）
-    print("L is UnK def ASCII")
+    # 5. 默认 ASCII
+    print('L is UnK def ASCII')
     ser.write(b'\x1F\x28\x67\x02\x00')
     return 'ascii'
 
