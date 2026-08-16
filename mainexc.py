@@ -28,8 +28,8 @@ PIPE_MODE = True  # True: read from named pipe; False: read from stdin
 PIPE_NAME = r'\\.\pipe\MusicInfoPipe'
 SERIAL_BAUD = 38400
 # 自动轮询播放位置并发送歌词的间隔（秒）
-POSITION_WATCH_INTERVAL = 0.15       # 可调为 0.2 ~ 1.0，根据需要
-POSITION_CHANGE_THRESHOLD = 0.05    # 最小位置变化阈值
+POSITION_WATCH_INTERVAL = 0.15     # 可调为 0.2 ~ 1.0，根据需要
+POSITION_CHANGE_THRESHOLD = 0.05   # 最小位置变化阈值
 LYRIC_OFFSET = 0.0                 # 全局统一歌词偏移量（秒）：正数提前，负数延后
 
 NETEASE_SEARCH_LIMIT = 5
@@ -132,7 +132,7 @@ def similar(a, b):
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 def parse_time_to_seconds(tstr):
-    # 支持 hh:mm:ss(.m	s) 或 mm:ss(.ms)
+    # 支持 hh:mm:ss(.ms) 或 mm:ss(.ms)
     if not tstr:
         return None
     try:
@@ -283,7 +283,7 @@ def choose_best_song_id(title, artist, album, duration_sec, search_limit=NETEASE
                 1.0
                 if diff <= DURATION_TOLERANCE_SEC
                 else max(0.0, 1.0 - (diff / max(duration_sec, dur_sec, 1.0)))
-            )
+                )
         # weighted sum
         score = (0.6 * s_title + 0.25 * s_artist + 0.1 * s_album) * dur_score
         # small boost if exact artist substring
@@ -435,13 +435,9 @@ def search_and_fetch_lyrics(title, artist, album, duration):
         if not sid:
             print("No song id found for", title, artist)
             return
-
         # 获取歌词并测量请求耗时
-        #lyric_start = time.time()
-        #data, http_rtt = netease_get_lyric(sid)  # netease_get_lyric 返回 (json, rtt)
         res = netease_get_lyric(sid)
         data = netease_get_lyric(sid)
-        #lyric_end = time.time()
 
         if not data:
             print("No lyric data")
@@ -459,7 +455,7 @@ def search_and_fetch_lyrics(title, artist, album, duration):
                 set_playback_anchor(0.0, at_ts=time.time())
 
         # 解析 lrc_text
-        # 从 data 中提取主歌词与译文   #fix5 part2
+        # 从 data 中提取主歌词与译文
         lrc_text = None
         tlyric_text = None
         if 'lrc' in data and data['lrc'] and 'lyric' in data['lrc']:
@@ -476,7 +472,7 @@ def search_and_fetch_lyrics(title, artist, album, duration):
             print("No lrc text in response for id:", sid)
             return
 
-# 使用合并函数，得到 grouped 结构
+        # 使用合并函数，得到 grouped 结构
         grouped = build_grouped_lyrics(lrc_text, tlyric_text)
 
         fetch_end = time.time()
@@ -491,7 +487,7 @@ def search_and_fetch_lyrics(title, artist, album, duration):
     except Exception as e:
         print("search_and_fetch_lyrics error:", e)
 
-# 计算目标时间并发送最接近的歌词行          #fix 1 part 3 #fix4 part1
+# 计算目标时间并发送最接近的歌词行
 # 假设 send_to_serial_line1 和 send_to_serial_line2 已存在（如前所示）
 # 并且全局变量 last_sent_lyric_time 已定义
 def compute_and_send_current_lyric():
@@ -527,10 +523,8 @@ def compute_and_send_current_lyric():
         return
 
     # 去重发送判断（按时间）
-    if (
-        last_sent_lyric_time is not None
-        and abs(last_sent_lyric_time - base_time) < 1e-6
-    ):
+    if (last_sent_lyric_time is not None
+        and abs(last_sent_lyric_time - base_time) < 1e-6):
         return
 
     # entries 是 [(source, text), ...]，按顺序取前两条文本
@@ -600,7 +594,7 @@ def stdin_reader_loop():
 # -----------------------
 # 主入口
 # -----------------------
-def main():     #fix14 part4
+def main():
     global ser, _position_watcher_stop
     
     # open serial
