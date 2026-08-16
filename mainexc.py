@@ -556,40 +556,37 @@ def compute_and_send_current_lyric():
 # 管道读取线程（Windows named pipe via pywin32）
 # -----------------------
 def pipe_reader_loop(pipe_name):
-    print("Pipe reader started:", pipe_name)
-    while True:
+  print("Pipe reader started:", pipe_name)
+  while True:
+    handle = None
+    try:
+      handle = win32file.CreateFile(pipe_name,win32file.GENERIC_READ,0,None,win32file.OPEN_EXISTING,0,None,)
+      data = b""
+      while True:
+        hr, chunk = win32file.ReadFile(handle, 4096)
+        if not chunk:
+          break
+        data += chunk
+        while b"\n" in data:
+          line, data = data.split(b"\n", 1)
+          s = line.decode("utf-8", errors="ignore").strip()
+          if s:
+            print("[PIPE] " + s)
+            parse_pipe_line(s)
+
+    except pywintypes.error as e:
+      if e.winerror == 231:
         try:
-            # CreateFile to open existing pipe
-            handle = win32file.CreateFile(
-                pipe_name,
-                win32file.GENERIC_READ,0, None,
-                win32file.OPEN_EXISTING,0, None
-            )
-            # read loop
-            data = b''
-            while True:
-                try:
-                    hr, chunk = win32file.ReadFile(handle, 4096)
-                    if not chunk:
-                        break
-                    data += chunk
-                    # split lines
-                    while b'\n' in data:
-                        line, data = data.split(b'\n', 1)
-                        s = line.decode('utf-8', errors='ignore').strip()
-                        if s:
-                            print("[PIPE] " + s)
-                            parse_pipe_line(s)
-                except pywintypes.error as e:
-                    # pipe closed or error
-                    break
-            try:
-                win32file.CloseHandle(handle)
-            except:
-                pass
-        except Exception as e:
-            print("pipe_reader_loop error:", e)
-            time.sleep(0.5)
+          win32pipe.WaitNamedPipe(pipe_name, 1000)
+        except Exception:
+          time.sleep(0.5)
+    except Exception as e:
+      print("pipe_reader_loop error:", e)
+      time.sleep(0.5)
+    finally:
+      # 保证无论读完、断开还是报错，都能即时释放当前句柄
+      if handle:
+          win32file.CloseHandle(handle)
 
 # stdin reader fallback
 def stdin_reader_loop():
