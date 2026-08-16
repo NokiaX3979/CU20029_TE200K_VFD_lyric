@@ -3,11 +3,9 @@
 # Dependencies: requests, pyserial, pywin32, zhconv
 # pip install requests pyserial pywin32 zhconv
 
-#from opencc import OpenCC
-#import traceback
 import os
 import re
-import time
+import ti	me
 import threading
 import requests
 import serial
@@ -18,10 +16,10 @@ from difflib import SequenceMatcher
 
 # If on Windows and using named pipe client:
 try:
-    import win32file, pywintypes
-    PIPE_AVAILABLE = True
+  import win32file, pywintypes
+  PIPE_AVAILABLE = True
 except Exception:
-    PIPE_AVAILABLE = False
+  PIPE_AVAILABLE = False
 
 # -----------------------
 # Configuration
@@ -30,18 +28,21 @@ PIPE_MODE = True  # True: read from named pipe; False: read from stdin
 PIPE_NAME = r'\\.\pipe\MusicInfoPipe'
 SERIAL_BAUD = 38400
 # 自动轮询播放位置并发送歌词的间隔（秒）
-POSITION_WATCH_INTERVAL = 0.2  # 可调为 0.2 ~ 1.0，根据需要
-POSITION_CHANGE_THRESHOLD = 0.05  # 最小位置变化阈值
-
-# 全局统一歌词偏移量（秒）：正数提前，负数延后
-LYRIC_OFFSET = 0.40
+POSITION_WATCH_INTERVAL = 0.15       # 可调为 0.2 ~ 1.0，根据需要
+POSITION_CHANGE_THRESHOLD = 0.05    # 最小位置变化阈值
+LYRIC_OFFSET = 0.20                 # 全局统一歌词偏移量（秒）：正数提前，负数延后
 
 NETEASE_SEARCH_LIMIT = 5
 DURATION_TOLERANCE_SEC = 8.0
 HTTP_TIMEOUT = 6.0
+
 # 控制发送行为
 SEND_ON_MATCH = True
 MIN_SEND_INTERVAL = 0.05   # 向串口发送最小间隔，防止刷屏（秒）
+
+# 全局变量定义与初始化
+#playback_anchor_ts = None
+#playback_anchor_pos = 0.0
 _position_watcher_stop = False
 
 _re_hiragana = re.compile(r'[\u3040-\u309F]')
@@ -67,7 +68,6 @@ state = {
 }
 
 # 歌词缓存与当前歌曲信息
-lyrics_lock = app_lock
 current_song = {
     "song_id": None,
     "lyrics": [],   # list of (time_seconds, text)
@@ -75,7 +75,6 @@ current_song = {
 }
 
 # 串口发送控制
-serial_lock = app_lock
 ser = None
 last_sent_ts = 0.0
 last_sent_lyric_time = None
@@ -84,20 +83,17 @@ last_sent_lyric_time = None
 # 工具函数
 # -----------------------
 
-#safe update #fix9 part1    #fix10 part1 #fix11 part1
 def safe_update_state(**kwargs):
-    #仅在传入值不为 None 且非空字符串时更新 state,避免意外覆盖已有字段为 None
-    with app_lock:
-        for k, v in kwargs.items():
-            if k in state:
-                if v is None:
-                    continue
-                if isinstance(v, str) and v.strip() == "":
-                    continue
-                state[k] = v
-        state['last_update_ts'] = time.time()
+  #仅在传入值不为 None 且非空字符串时更新 state,避免意外覆盖已有字段为 None
+  with app_lock:
+    for k, v in kwargs.items():
+        if k in state:
+            if v is None or(isinstance(v, str) and v.strip() == ""):
+                continue
+            state[k] = v
+    state['last_update_ts'] = time.time()
 
-#歌词自动输出       #fix14 part3    #fix15 part4
+#歌词自动输出
 def position_watcher(interval=POSITION_WATCH_INTERVAL):
     last_pos = None
     print("position_watcher started, interval=", interval)
@@ -112,7 +108,7 @@ def position_watcher(interval=POSITION_WATCH_INTERVAL):
             if playback and str(playback).lower() == 'playing':
                 pos = compute_current_position_from_anchor()
                 # 只有当 position 明显变化时才调用，避免无谓调用
-                if last_pos is None or abs(pos - last_pos) >= POSITION_CHANGE_THRESHOLD:
+                if (last_pos is None or abs(pos - last_pos) >= POSITION_CHANGE_THRESHOLD):
                     # 把计算出的 pos 写回 state（可选），以便其它逻辑使用
                     safe_update_state(position=pos)
                     last_pos = pos
@@ -142,14 +138,9 @@ def parse_time_to_seconds(tstr):
     try:
         parts = tstr.split(':')
         if len(parts) == 3:
-            h = int(parts[0])
-            m = int(parts[1])
-            s = float(parts[2])
-            return h*3600 + m*60 + s
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
         elif len(parts) == 2:
-            m = int(parts[0])
-            s = float(parts[1])
-            return m*60 + s
+            return int(parts[0]) * 60 + float(parts[1])
     except Exception:
         return None
     return None
@@ -174,7 +165,7 @@ def parse_lrc(lrc_text):
     lines.sort(key=lambda x: x[0])
     return lines
 
-#创建lrc歌词组 双语 #fix5 part1 #fix6 part1
+#创建lrc歌词组 双语
 def build_grouped_lyrics(lrc_text, tlyric_text=None):
     #返回 [(time_seconds, [(source, text), ...]), ...]
     #source 为 'lrc' 或 'tlyric'，保留重复文本并保持加入顺序。
@@ -183,16 +174,11 @@ def build_grouped_lyrics(lrc_text, tlyric_text=None):
     grouped = {}   # key -> (orig_time, [(source, text), ...])
     order = []
 
-    def key_of(t):
-        return round(t, 3)  # 毫秒对齐
-
     def add_entry(t, txt, src):
-        if txt is None:
+        if not txt or not txt.strip():
             return
         txt = txt.strip()
-        if not txt:
-            return
-        k = key_of(t)
+        k = round(t, 3)
         if k not in grouped:
             grouped[k] = [t, []]
             order.append(k)
@@ -206,25 +192,19 @@ def build_grouped_lyrics(lrc_text, tlyric_text=None):
     for t, txt in parsed_trans:
         add_entry(t, txt, 'tlyric')
 
-    ordered_keys = sorted(order)
-    result = []
-    for k in ordered_keys:
-        time_float = grouped[k][0]
-        entries = grouped[k][1]  # list of (source, text)
-        result.append((time_float, entries))
-    return result
+    return [(grouped[k][0], grouped[k][1]) for k in sorted(order)]
 
-#检测当前时间 #fix15 part2
+
+#检测当前时间
 def set_playback_anchor(pos_seconds, at_ts=None):
     #将播放锚点设置为：在 wall-clock 时间 at_ts 时，歌曲位置为 pos_seconds。
     #如果 at_ts 为 None，使用当前时间.
-    global playback_anchor_ts, playback_anchor_pos, is_paused_by_anchor
+    global playback_anchor_ts, playback_anchor_pos
     if at_ts is None:
         at_ts = time.time()
     with app_lock:
         playback_anchor_ts = float(at_ts)
         playback_anchor_pos = float(pos_seconds or 0.0)
-        is_paused_by_anchor = False
     # debug
     print("[ANCHOR] set anchor pos=%.3f at_ts=%.3f" % (playback_anchor_pos, playback_anchor_ts))
 
@@ -244,11 +224,11 @@ def compute_current_position_from_anchor():
 NETEASE_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
     'Referer': 'https://music.163.com',
-    'Accept': 'application/json, text/plain, */*'
+    'Accept': 'application/json, text/plain, */*',
 }
 
 def netease_search(query, limit=NETEASE_SEARCH_LIMIT):
-    # query: string
+    #网易云搜索
     url = 'https://music.163.com/api/search/get'
     params = {'s': query, 'type': 1, 'offset': 0, 'limit': limit}
     try:
@@ -290,12 +270,7 @@ def choose_best_song_id(title, artist, album, duration_sec, search_limit=NETEASE
         al = c.get('album', {}).get('name', '')
         # duration from API in ms
         dur_ms = c.get('duration') or c.get('dt') or None
-        dur_sec = None
-        if dur_ms:
-            try:
-                dur_sec = float(dur_ms) / 1000.0
-            except:
-                dur_sec = None
+        dur_sec = float(dur_ms) / 1000.0 if dur_ms else None
         # compute similarity score
         s_title = similar(title, t)
         s_artist = similar(artist, ar)
@@ -304,23 +279,20 @@ def choose_best_song_id(title, artist, album, duration_sec, search_limit=NETEASE
         dur_score = 1.0
         if duration_sec and dur_sec:
             diff = abs(duration_sec - dur_sec)
-            if diff <= DURATION_TOLERANCE_SEC:
-                dur_score = 1.0
-            else:
-                # decay
-                dur_score = max(0.0, 1.0 - (diff / max(duration_sec, dur_sec, 1.0)))
+            dur_score = (
+                1.0
+                if diff <= DURATION_TOLERANCE_SEC
+                else max(0.0, 1.0 - (diff / max(duration_sec, dur_sec, 1.0)))
+            )
         # weighted sum
-        score = (0.6 * s_title) + (0.25 * s_artist) + (0.1 * s_album)
-        score *= dur_score
+        score = (0.6 * s_title + 0.25 * s_artist + 0.1 * s_album) * dur_score
         # small boost if exact artist substring
         if artist and artist.lower() in ar.lower():
             score += 0.05
         if score > best_score:
             best_score = score
-            best = (sid, t, ar, al, dur_sec, score)
-    if best:
-        return best[0]
-    return None
+            best = sid
+    return best
 
 # -----------------------
 # 串口发送
@@ -350,7 +322,7 @@ def send_to_serial_line1(text: str, force: bool = False) -> None:
     try:
         with app_lock:
             # 1. 先用干净的 text 检测语言编码
-            encoding = simple_detect_line_language(text, 1)
+            encoding = simple_detect_line_language(text)
             # 2. 再拼接换行符打包发送
             payload = text + '\n\r'
             ser.write(b'\x0C')
@@ -362,11 +334,9 @@ def send_to_serial_line1(text: str, force: bool = False) -> None:
 
 def send_to_serial_line2(text: str, force: bool = False) -> None:
     #逐行发送第二条文本(LRC2 前缀由调用方添加或在上层处理)。
-    #参数与 send_to_serial_line1 相同。
+    #参数与 send_to_serial_line1 相同
     global last_sent_ts, ser
-    if not SEND_ON_MATCH:
-        return
-    if ser is None:
+    if not SEND_ON_MATCH or ser is None:
         return
     now = time.time()
     if not force and (now - last_sent_ts) < MIN_SEND_INTERVAL:
@@ -374,123 +344,69 @@ def send_to_serial_line2(text: str, force: bool = False) -> None:
     try:
         with app_lock:
             #payload = text
-            ser.write(text.encode(simple_detect_line_language(text,2), errors='ignore'))
+            ser.write(text.encode(simple_detect_line_language(text), errors='ignore'))
             ser.flush()
         last_sent_ts = now
     except Exception as e:
         print("Serial send (line2) error:", e)
 
 # -----------------------
-# 处理逻辑：当收到新管道行时解析并触发动作
+# 管道消息解析逻辑：当收到新管道行时解析并触发动作
 # -----------------------
-_re_timeline = re.compile(r"""^\[.*?\]\s*(?P<src>\S+)\s+timeline\s+is\s+now\s+(?P<pos>\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?)/(?P<dur>\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?)""", re.IGNORECASE | re.VERBOSE)
-_re_playstate = re.compile(r"""^\[.*?\]\s*(?P<src>\S+)\s+is\s+now\s+(?P<state>Playing|Paused|Stopped|Buffering|Closed)""", re.IGNORECASE | re.VERBOSE)
-_re_playing_info = re.compile(r"""^\[.*?\]\s*(?P<src>\S+)\s+is\s+now\s+playing\s+(?P<title>.+?)\s+by\s+(?P<artist>.+)""", re.IGNORECASE | re.VERBOSE)
+_re_timeline = re.compile(
+    r"""^\[.*?\]\s*(?P<src>\S+)\s+timeline\s+is\s+now\s+(?P<pos>\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?)/(?P<dur>\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?)""",
+    re.IGNORECASE | re.VERBOSE,
+)
 
-# 解析行并更新 state  #fix in 6,7,12,13,14
 def parse_pipe_line(line):
-    line = line.strip()
-    if not line:
-        return
+  line = line.strip()
+  if not line:
+    return
 
-    # 先统一更新 last_line 字段（不覆盖其它字段）
-    safe_update_state(last_line=line)
-    lower = line.lower()
+  # 先统一更新 last_line 字段
+  safe_update_state(last_line=line)
+  lower = line.lower()
 
-    # 明确的暂停行（例如 "is now Paused"）
-    if 'is now paused' in lower:
-        # 更新播放状态为 Paused
-        safe_update_state(playback='Paused')
-        on_playback_state_change('Paused')
-        return
+  # 1. 明确的暂停状态（例如 "is now Paused"）
+  if 'is now paused' in lower:
+    safe_update_state(playback='Paused')
+    return
 
-    # 明确的 playing 信息（带 "is now playing" 且包含 " by " 表示带有 title+artist -> 切歌）
-    if 'is now playing' in lower and ' by ' in lower:
-        # 尝试用正则提取 title 和 artist（回退到简单切分）
-        m = _re_playing_info.match(line)
-        if m:
-            src = m.group('src')
-            title = m.group('title').strip()
-            artist = m.group('artist').strip()
-            safe_update_state(source=src, title=title, artist=artist)
-        else:
-            # 回退解析：取 "is now playing" 之后，按 " by " 分割
-            try:
-                idx = lower.index('is now playing')
-                tail = line[idx + len('is now playing'):].strip()
-                if ' by ' in tail.lower():
-                    parts = re.split(r'\s+by\s+', tail, flags=re.IGNORECASE)
-                    title = parts[0].strip()
-                    artist = parts[1].strip() if len(parts) > 1 else None
-                    safe_update_state(title=title, artist=artist)
-            except Exception:
-                pass
-        # 切歌：触发新歌检测（不依赖 playback 变化）
-        on_new_song_detected()
-        return
+  # 2. timeline 行（进度拖动 / 暂停前锁定 / 恢复播放定位）
+  m_tl = _re_timeline.match(line)
+  if m_tl:
+    src = m_tl.group('src')
+    pos = parse_time_to_seconds(m_tl.group('pos'))
+    dur = parse_time_to_seconds(m_tl.group('dur'))
+    safe_update_state(source=src, position=pos, duration=dur)
+    # 更新基准锚点
+    set_playback_anchor(pos, at_ts=time.time())
+    return
 
-    # 只有 "is now playing"（但没有 "by"） -> 视为从暂停/停止开始播放（metadata 可能稍后到）
-    if 'is now playing' in lower:
-        # 标记为播放状态；若后续有 title 到达会触发 on_new_song_detected
-        safe_update_state(playback='Playing')
-        on_playback_state_change('Playing')
-        # 如果当前 state 已有 title 且与缓存不同，触发搜索
+  # 3. 播放状态与歌曲信息处理
+  if 'is now playing' in lower:
+    safe_update_state(playback='Playing')
+
+    # 判断是否带有具体的 "歌名 by 歌手" 信息
+    idx = lower.find('is now playing ')
+    if idx != -1:
+      info_part = line[idx + len('is now playing ') :].strip()
+
+      # 从后往前找最后一个 ' by '，精准拆分歌名和歌手（防歌名含 by）
+      by_idx = info_part.rfind(' by ')
+      if by_idx != -1:
+        new_title = info_part[:by_idx].strip()
+        new_artist = info_part[by_idx + 4 :].strip()
+
         st = get_state_copy()
-        title_now = st.get('title')
-        if title_now:
-            with app_lock:
-                cached_title = current_song.get('title_cached')
-                has_lyrics = bool(current_song.get('lyrics'))
-            if cached_title != title_now or not has_lyrics:
-                with app_lock:
-                    current_song['title_cached'] = title_now
-                    current_song['fetch_start'] = time.time()
-                    current_song['fetch_duration'] = None
-                    current_song['song_id'] = None
-                    current_song['lyrics'] = []
-                    current_song['fetched_at'] = None
-                #这里的作用未知，但是注释掉后不会搜索两遍歌词，但是第一次运行程序有可能印不出来歌词，，
-                t = threading.Thread(target=search_and_fetch_lyrics, args=(title_now, st.get('artist'), st.get('album'), st.get('duration')), daemon=True)
-                t.start()
-        return
+        # 仅当歌名发生变化时才触发新歌搜索，防止恢复播放时重复请求
+        if st.get('title') != new_title:
+          safe_update_state(title=new_title, artist=new_artist)
+          on_new_song_detected()
 
-    # timeline 行（保持原有行为）
-    m = _re_timeline.match(line)
-    if m:
-        src = m.group('src')
-        pos = parse_time_to_seconds(m.group('pos'))
-        dur = parse_time_to_seconds(m.group('dur'))
-        safe_update_state(source=src, position=pos, duration=dur)
-        # timeline 分支解析后  #fix15 part3
-        safe_update_state(source=src, position=pos, duration=dur, last_line=line)
-        # 更新锚点，防止暂停时继续推进
-        set_playback_anchor(pos, at_ts=time.time())
-        on_timeline_update()
-        return
-
-    # 其它带 "is now" 的播放状态（例如 Stopped/Buffering 等），按原逻辑处理
-    m = _re_playstate.match(line)
-    if m:
-        src = m.group('src')
-        st = m.group('state').capitalize()
-        safe_update_state(source=src, playback=st)
-        on_playback_state_change(st)
-        return
-
-    # fallback: 如果行包含 "is now playing" 但解析失败，尝试保留尾部为 title
-    if 'is now playing' in lower:
-        try:
-            idx = lower.index('is now playing')
-            tail = line[idx + len('is now playing'):].strip()
-            if tail:
-                safe_update_state(title=tail)
-                on_new_song_detected()
-        except Exception:
-            pass
-
-# 当检测到新歌曲信息时（title/artist/album 更新）    #change 1st here fix
+# 当检测到新歌曲信息时（title/artist/album 更新）
 def on_new_song_detected():
-    set_playback_anchor(0.0, at_ts=time.time())        #own fix16 1
+    set_playback_anchor(0.0, at_ts=time.time())
     st = get_state_copy()
     title = st.get('title')
     artist = st.get('artist')
@@ -679,13 +595,10 @@ def pipe_reader_loop(pipe_name):
                     # split lines
                     while b'\n' in data:
                         line, data = data.split(b'\n', 1)
-                        try:
-                            s = line.decode('utf-8', errors='ignore').strip()
-                            if s:
-                                print("[PIPE] " + s)
-                                parse_pipe_line(s)
-                        except Exception as e:
-                            print("line decode error", e)
+                        s = line.decode('utf-8', errors='ignore').strip()
+                        if s:
+                            print("[PIPE] " + s)
+                            parse_pipe_line(s)
                 except pywintypes.error as e:
                     # pipe closed or error
                     break
@@ -693,8 +606,7 @@ def pipe_reader_loop(pipe_name):
                 win32file.CloseHandle(handle)
             except:
                 pass
-        except pywintypes.error as e:
-            # no server yet or other error; wait and retry
+        except Exception:        # no server yet or other error; wait and retry
             time.sleep(0.5)
         except Exception as e:
             print("pipe_reader_loop error:", e)
@@ -716,36 +628,30 @@ def main():     #fix14 part4
     global ser, _position_watcher_stop
     
     # open serial
-    if len(list(serial.tools.list_ports.comports())) == 0:
-      print('未检测到COM端口')
-      os.system("pause")
-      sys.exit(0)
-    else:
-      for port in serial.tools.list_ports.comports():
-        print(f"名称: {port.name}")
-        print(f"描述: {port.description}")
-        print(f"制造商: {port.manufacturer}")
-        print(f"硬件ID: {port.hwid}")
-        print("-" * 30)
-        print("请输入要连接的COM端口")
-      SERIAL_PORT = input("请输入：");
+    com_ports = list(serial.tools.list_ports.comports())
+    if not com_ports:
+        print('未检测到COM端口')
+        os.system('pause')
+        sys.exit(0)
+
+    for port in com_ports:
+        print(f'名称: {port.name}\n描述: {port.description}\n硬件ID:'f' {port.hwid}\n'+ '-' * 30)
+        SERIAL_PORT = input("请输入要连接的COM端口：");
     try:
         open_serial(SERIAL_PORT, SERIAL_BAUD)
 
     #initalize screen
         ser.write(b'\x0C\x1f\x03')
-        ser.write(b'\x1F\x58\x03')      #set brightness 03-75%
+        #ser.write(b'\x1F\x58\x03')      #set brightness 03-75%
     except Exception as e:
         print("Serial open failed:", e)
 
     # start pipe or stdin reader
     if PIPE_MODE and PIPE_AVAILABLE:
-        t = threading.Thread(target=pipe_reader_loop, args=(PIPE_NAME,), daemon=True)
-        t.start()
+        threading.Thread(target=pipe_reader_loop, args=(PIPE_NAME,), daemon=True).start()
     else:
         print("PIPE_MODE disabled or pywin32 not available; using stdin")
-        t = threading.Thread(target=stdin_reader_loop, daemon=True)
-        t.start()
+        threading.Thread(target=stdin_reader_loop, daemon=True).start()
 
     # start position watcher thread
     watcher_thread = threading.Thread(target=position_watcher, daemon=True)
@@ -762,17 +668,16 @@ def main():     #fix14 part4
             _position_watcher_stop = True
         # give watcher a moment to exit
         watcher_thread.join(timeout=1.0)
-        try:
-            if ser:
-                ser.close()
-        except:
-            pass
+        if ser:
+            ser.close()
+
 
 # text language test return gb2312 big5 shift_jis ksc5601 or ascii  2026-08-15
-def simple_detect_line_language(text, Line):
+def simple_detect_line_language(text):
     if not text or not text.strip():
         return 'ascii'
-
+    
+    text = text.strip()
     counts = {
         'hiragana': 0,
         'katakana': 0,
@@ -795,8 +700,7 @@ def simple_detect_line_language(text, Line):
         else:
             counts['other'] += 1
 
-    total = sum(counts.values())
-    if total == 0:
+    if sum(counts.values()) == 0:
         ser.write(b'\x1F\x28\x67\x02\x00')
         return 'ascii'
 
