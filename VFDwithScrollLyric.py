@@ -33,7 +33,7 @@ DISPLAY_WIDTH = 20          # VFD 屏幕每行字符数
 DEFAULT_PAUSE_SEC = 0.6     # 动态滚屏首尾默认停顿时间（秒）
 
 # 自动轮询渲染帧的间隔（秒，0.08s 约为 12 FPS，保障滚屏丝滑且 CPU 占用低）
-POSITION_WATCH_INTERVAL = 0.08     
+POSITION_WATCH_INTERVAL = 0.06     
 LYRIC_OFFSET = 0.0          # 全局统一歌词偏移量（秒）：正数提前，负数延后
 
 NETEASE_SEARCH_LIMIT = 5
@@ -43,7 +43,7 @@ HTTP_TIMEOUT = 6.0
 # VFD 光标定位指令
 CMD_LINE1_START = b'\x1F\x24\x01\x01'  # 定位到 Line 1 起点
 CMD_LINE2_START = b'\x1F\x24\x01\x02'  # 定位到 Line 2 起点
-
+VFD_HMODE = True
 # 全局变量定义与初始化
 playback_anchor_ts = None
 playback_anchor_pos = 0.0
@@ -175,12 +175,25 @@ def compute_current_position_from_anchor():
     else:
         return float(playback_anchor_pos + max(0.0, time.time() - playback_anchor_ts))
 
+def send_single_line_lyric(text: str):
+    """
+    单行无翻译歌词直推送：清屏 + 设置 Vertical scroll mode + 一次性发送文本
+    由 VFD 硬件自动在 20 字符处换行到第二行
+    """
+    cmd, enc = simple_detect_line_language(text)
+    payload = text.encode(enc, errors='replace')
+    # 指令序列：0Ch (清屏复位) + 切码指令 + 歌词文本
+    ser.write(b'\x0C' + cmd + payload)
+    ser.flush()
+    print('Single push:', text)
+
 # -----------------------
-# 语言检测与硬件切码
+# 语言检测与硬件切码（完整匹配 中/繁/日/韩/英）
 # -----------------------
 def simple_detect_line_language(text):
     """
-    检测文本语言，返回 (VFD硬件切码指令字节, Python编码字符串)
+    通过字符特征与编码瀑布流（GB2312 -> Big5 -> Shift_JIS -> KSC5601），
+    精确匹配 VFD 硬件支持的语言。
     """
     if not text or not text.strip():
         return (b'\x1F\x28\x67\x02\x00', 'ascii')
@@ -196,29 +209,69 @@ def simple_detect_line_language(text):
             counts['katakana'] += 1
         elif 0xAC00 <= code <= 0xD7AF:
             counts['hangul'] += 1
-        elif ((0x4E00 <= code <= 0x9FFF) or (0x3400 <= code <= 0x4DBF) or (0xF900 <= code <= 0xFAFF)):
+        elif (0x4E00 <= code <= 0x9FFF) or (0x3400 <= code <= 0x4DBF) or (0xF900 <= code <= 0xFAFF):
             counts['cjk'] += 1
 
-    # 1. 日文
+    # 1. 带假名的日文 (100% 确定为日文)
     if counts['hiragana'] + counts['katakana'] > 0:
+        print("L: 100%JP")
         return (b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x00', 'shift_jis')
 
-    # 2. 韩文
-    if counts['hangul'] > 0 and counts['hangul'] >= counts['cjk']:
-        return (b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x01', 'KSC5601')
 
-    # 3. 中文：优先尝试 GB2312 编码测试
+    # 2. 带谚文的韩文 (100% 确定为韩文)
+    if counts['hangul'] > 0:
+        print("L: 100%KR")
+        return (b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x01', 'ksc5601')
+
+
+    # 3. 无假名/谚文的 CJK 纯汉字（按字库优先级碰撞）
     if counts['cjk'] > 0:
+        # ① 优先测试简体中文 (GB2312)
         try:
-            # 只要整行文本（含标点）能被 GB2312 正常编码，就使用 GB2312
             text.encode('gb2312')
+            print("L: zhS OK")
             return (b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x02', 'GB2312')
         except UnicodeEncodeError:
-            # 编码失败说明含有 GB2312 未收录的繁体字，使用 Big5
-            return (b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x03', 'Big5')
+            pass
 
-    # 4. 英文/默认
-    return (b'\x1F\x28\x67\x02\x00', 'ASCII')
+        # ② 测试繁体中文 (Big5)
+        try:
+            text.encode('Big5')
+            print("L: zhT OK")
+            return (b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x03', 'Big5')
+        except UnicodeEncodeError:
+            pass
+
+        # ③ 测试日文汉字 (Shift_JIS，可捕获“毎”、“桜”、“転”等日文独有汉字)
+        try:
+            text.encode('Shift_JIS')
+            print("L: JP OK")
+            return (b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x00', 'shift_jis')
+        except UnicodeEncodeError:
+            pass
+
+        # ④ 测试韩文汉字 (KSC5601 / EUC-KR)
+        try:
+            text.encode('KSC5601')
+            print("L: KR OK")
+            return (b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x01', 'ksc5601')
+        except UnicodeEncodeError:
+            pass
+
+    # 4. ASCII / 纯英文降级处理
+    try:
+        text.encode('ascii')
+        print("L: def ASC")
+        return (b'\x1F\x28\x67\x02\x00', 'ASCII')
+    except UnicodeEncodeError:
+        # 若夹杂全角标点导致 ASCII 失败，进行传统zhconv转换，并强制转换为繁体中文
+        if zhconv.convert(text, 'zh-cn') != text:
+          print("L: Downgrade zhT")
+          text = zhconv.convert(text, 'zh-tw')
+          return (b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x03', 'Big5')
+        else:
+          print("L: Downgrade zhS")
+          return (b'\x1F\x28\x67\x02\x01\x1F\x28\x67\x03\x02', 'GB2312')
 
 # -----------------------
 # 辅助函数：清洗全角符号与安全编码
@@ -234,6 +287,8 @@ def safe_encode_slice(slice_text: str, encoding: str) -> bytes:
         '—': '-',        # 破折号
         '…': '...',      # 省略号
         '～': '~',
+        ' ': ''	,		 #神秘空格(NO-BREAK SPACE)
+        '•': '●',
     }
     for old_c, new_c in replacements.items():
         slice_text = slice_text.replace(old_c, new_c)
@@ -287,6 +342,7 @@ def get_scroll_offset(text: str, elapsed_time: float, duration: float = 5.0) -> 
 # 核心渲染与发送引擎
 # -----------------------
 def compute_and_send_current_lyric():
+    global VFD_HMODE
     if ser is None:
         return
 
@@ -298,8 +354,10 @@ def compute_and_send_current_lyric():
     if pos is None:
         return
 
+    # 1. 从 current_song 中获取歌词列表和整曲 has_tlyric 标记
     with app_lock:
         grouped = list(current_song.get('lyrics') or [])
+        song_has_tlyric = current_song.get('has_tlyric', False)
 
     target_time = pos + LYRIC_OFFSET
 
@@ -318,15 +376,34 @@ def compute_and_send_current_lyric():
     if not entries:
         return
 
+    # =================【分支 A：整曲无翻译 -> 单行全屏直推】=================
+    if not song_has_tlyric:
+        if base_time != active_lyric_state["base_time"]:
+            active_lyric_state["base_time"] = base_time
+            text_single = entries[0][1]
+            if VFD_HMODE:
+                ser.write(b'\x1F\x02')  # 切换至 Vertical scroll mode
+                ser.flush()
+                VFD_HMODE = False
+
+            send_single_line_lyric(text_single)
+        return  # 单行直推只需在时间戳变化时发送一次，之后直接退出
+
+    # =================【分支 B：整曲有翻译 -> 双行滚屏推送】=================
+    text1 = entries[0][1] if len(entries) >= 1 else ""
+    text2 = entries[1][1] if len(entries) >= 2 else ""
+    
+    # 动态切换回 Horizontal scroll mode
+    if not VFD_HMODE:
+        ser.write(b'\x1F\x03')
+        ser.flush()
+        VFD_HMODE = True
     # 计算当前歌词句的动态可用时长 duration
     if idx + 1 < len(grouped):
         next_time = grouped[idx + 1][0]
         duration = max(0.5, next_time - base_time)
     else:
         duration = 5.0
-
-    text1 = entries[0][1] if len(entries) >= 1 else ""
-    text2 = entries[1][1] if len(entries) >= 2 else ""
 
     if base_time != active_lyric_state["base_time"]:
         active_lyric_state["base_time"] = base_time
@@ -349,7 +426,7 @@ def compute_and_send_current_lyric():
         payload1 = safe_encode_slice(raw_slice1, active_lyric_state["enc1"])
         ser.write(active_lyric_state["cmd1"] + CMD_LINE1_START)
         ser.write(payload1)
-        print('line1: ' + raw_slice1)                #debug
+        print('line1: ' + raw_slice1)
         ser.flush()
         active_lyric_state["last_slice1"] = raw_slice1
 
@@ -361,7 +438,7 @@ def compute_and_send_current_lyric():
         payload2 = safe_encode_slice(raw_slice2, active_lyric_state["enc2"])
         ser.write(active_lyric_state["cmd2"] + CMD_LINE2_START)
         ser.write(payload2)
-        print('line2: ' + raw_slice2)                #debug
+        print('line2: ' + raw_slice2)
         ser.flush()
         active_lyric_state["last_slice2"] = raw_slice2
 
@@ -484,24 +561,31 @@ def search_and_fetch_lyrics(title, artist, album, duration):
             pos = st.get('position')
             set_playback_anchor(pos if pos is not None else 0.0, at_ts=time.time())
 
-        lrc_text = data.get('lrc', {}).get('lyric')
-        tlyric_text = data.get('tlyric', {}).get('lyric')
+        lrc_text = data.get('lrc', {}).get('lyric') or ""
+        tlyric_text = data.get('tlyric', {}).get('lyric') or ""
 
-        if not lrc_text and tlyric_text:
+        # 1. 确定整曲级别的翻译标记
+        has_tlyric = bool(tlyric_text and tlyric_text.strip())
+
+        if not lrc_text and has_tlyric:
             lrc_text = tlyric_text
-            tlyric_text = None
+            has_tlyric = False
 
-        if not lrc_text:
+        if not lrc_text.strip():
             return
 
-        grouped = build_grouped_lyrics(lrc_text, tlyric_text)
+        # 2. 构建歌词（若无翻译则不向 build_grouped_lyrics 传入 tlyric）
+        grouped = build_grouped_lyrics(lrc_text, tlyric_text if has_tlyric else None)
         fetch_end = time.time()
+        
+        # 3. 写入全局状态，记录 has_tlyric
         with app_lock:
             current_song['song_id'] = sid
             current_song['lyrics'] = grouped
+            current_song['has_tlyric'] = has_tlyric  # <--- 存入整曲标记
             current_song['fetched_at'] = fetch_end
 
-        print("Fetched grouped lyrics entries:", len(grouped))
+        print("Fetched grouped lyrics entries:", len(grouped), "has_tlyric:", has_tlyric)
     except Exception as e:
         print("search_and_fetch_lyrics error:", e)
 
@@ -618,6 +702,7 @@ def main():
         open_serial(SERIAL_PORT, SERIAL_BAUD)
         if ser:
             ser.write(b'\x0C\x1f\x03')
+            #ser.write(b'\x1F\x58\x03')      #set brightness 03-75%
     except Exception as e:
         print("Serial open failed:", e)
 
