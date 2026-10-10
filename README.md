@@ -5,7 +5,7 @@ Based on this project: [https://github.com/DubyaDude/WindowsMediaController](htt
 ## What you need:
 1. A VFD screen CU20029-TE200K (or Futaba M202MD28A maybe also work)  
 2. a ttl to rs232 module
-~~3. python interpreter~~ now avablie at c# binary
+3. ~~python interpreter~~ now avablie at c# binary
 
 ## What music software support?
 Maybe all music software that supports SMTC procotool?  
