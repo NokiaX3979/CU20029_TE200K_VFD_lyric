@@ -1,7 +1,6 @@
 # CU20029_TE200K_VFD_lyric
-a not simple vfd lyric demo (it just works(on my computer))  
+a VFD lyric demo
 Based on this project: [https://github.com/DubyaDude/WindowsMediaController](https://github.com/DubyaDude/WindowsMediaController) 
-Plan to rewrite to C# later due to SMTC
 
 ## What you need:
 1. A VFD screen CU20029-TE200K (or Futaba M202MD28A maybe also work)  
