@@ -1,0 +1,22 @@
+D:\Internet Download Manager Download\WindowsMediaController-master\WindowsMediaController\bin\Debug\net472\WindowsMediaController.dll
+D:\Internet Download Manager Download\WindowsMediaController-master\WindowsMediaController\bin\Debug\net472\WindowsMediaController.pdb
+D:\Internet Download Manager Download\WindowsMediaController-master\WindowsMediaController\bin\Debug\net472\Microsoft.Extensions.Logging.Abstractions.dll
+D:\Internet Download Manager Download\WindowsMediaController-master\WindowsMediaController\obj\Debug\net472\WindowsMediaController.csproj.AssemblyReference.cache
+D:\Internet Download Manager Download\WindowsMediaController-master\WindowsMediaController\obj\Debug\net472\WindowsMediaController.GeneratedMSBuildEditorConfig.editorconfig
+D:\Internet Download Manager Download\WindowsMediaController-master\WindowsMediaController\obj\Debug\net472\WindowsMediaController.AssemblyInfoInputs.cache
+D:\Internet Download Manager Download\WindowsMediaController-master\WindowsMediaController\obj\Debug\net472\WindowsMediaController.AssemblyInfo.cs
+D:\Internet Download Manager Download\WindowsMediaController-master\WindowsMediaController\obj\Debug\net472\WindowsMediaController.csproj.CoreCompileInputs.cache
+D:\Internet Download Manager Download\WindowsMediaController-master\WindowsMediaController\obj\Debug\net472\WindowsMediaController.csproj.CopyComplete
+D:\Internet Download Manager Download\WindowsMediaController-master\WindowsMediaController\obj\Debug\net472\WindowsMediaController.dll
+D:\Internet Download Manager Download\WindowsMediaController-master\WindowsMediaController\obj\Debug\net472\WindowsMediaController.pdb
+D:\VFDLyric\SMTCPipe\WindowsMediaController\bin\Debug\net472\WindowsMediaController.dll
+D:\VFDLyric\SMTCPipe\WindowsMediaController\bin\Debug\net472\WindowsMediaController.pdb
+D:\VFDLyric\SMTCPipe\WindowsMediaController\bin\Debug\net472\Microsoft.Extensions.Logging.Abstractions.dll
+D:\VFDLyric\SMTCPipe\WindowsMediaController\obj\Debug\net472\WindowsMediaController.csproj.AssemblyReference.cache
+D:\VFDLyric\SMTCPipe\WindowsMediaController\obj\Debug\net472\WindowsMediaController.GeneratedMSBuildEditorConfig.editorconfig
+D:\VFDLyric\SMTCPipe\WindowsMediaController\obj\Debug\net472\WindowsMediaController.AssemblyInfoInputs.cache
+D:\VFDLyric\SMTCPipe\WindowsMediaController\obj\Debug\net472\WindowsMediaController.AssemblyInfo.cs
+D:\VFDLyric\SMTCPipe\WindowsMediaController\obj\Debug\net472\WindowsMediaController.csproj.CoreCompileInputs.cache
+D:\VFDLyric\SMTCPipe\WindowsMediaController\obj\Debug\net472\WindowsMediaController.csproj.CopyComplete
+D:\VFDLyric\SMTCPipe\WindowsMediaController\obj\Debug\net472\WindowsMediaController.dll
+D:\VFDLyric\SMTCPipe\WindowsMediaController\obj\Debug\net472\WindowsMediaController.pdb
